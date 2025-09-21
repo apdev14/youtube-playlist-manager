@@ -1,0 +1,5 @@
+# Ignore node modules
+node_modules/
+
+# Ignore any client secret JSON file
+client_secret*
