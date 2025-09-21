@@ -1,17 +1,13 @@
 /**
  * delete_playlists.js
  *
- * Fully updated version:
- * - Supports --items=N flag (playlists with exactly N videos)
- * - Supports --before=YYYY flag (playlists created before this year)
- * - Paginated output for long lists
- * - Manual OAuth flow (no localhost redirect)
+ * Updated version: supports --single flag (playlists with only 1 video)
+ * Manual OAuth flow (no localhost redirect)
  *
  * Usage:
- *   node delete_playlists.js                     # lists all playlists
- *   node delete_playlists.js --items=1          # lists playlists with exactly 1 item
- *   node delete_playlists.js --before=2020      # lists playlists created before 2020
- *   node delete_playlists.js --items=1 --before=2019 --confirm  # deletes playlists with 1 item created before 2019
+ *   node delete_playlists.js                  # lists all playlists
+ *   node delete_playlists.js --single        # lists playlists with 1 item
+ *   node delete_playlists.js --single --confirm  # deletes playlists with 1 item
  *   node delete_playlists.js --filter="Old" --confirm
  *   node delete_playlists.js --ids="ID1,ID2" --confirm
  */
@@ -27,26 +23,11 @@ const CREDENTIALS_PATH = path.join(process.cwd(), 'client_secret.json');
 const TOKEN_DIR = path.join(os.homedir(), '.credentials');
 const TOKEN_PATH = path.join(TOKEN_DIR, 'youtube-delete-playlists.json');
 
-// Helper function for prompt
 function ask(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => rl.question(question, ans => { rl.close(); resolve(ans); }));
 }
 
-// Helper function for paginated output
-async function pageOutput(items, pageSize = 20) {
-  for (let i = 0; i < items.length; i += pageSize) {
-    const chunk = items.slice(i, i + pageSize);
-    chunk.forEach((p, idx) => {
-      console.log(`${i + idx + 1}. ${p.snippet.title} (${p.id}) [items: ${p.contentDetails.itemCount || 0}] [created: ${p.snippet.publishedAt}]`);
-    });
-    if (i + pageSize < items.length) {
-      await ask('\nPress Enter to continue...');
-    }
-  }
-}
-
-// Authorize with Google OAuth
 async function authorize() {
   if (!fs.existsSync(CREDENTIALS_PATH)) {
     console.error('Error: client_secret.json not found in current folder.');
@@ -58,7 +39,7 @@ async function authorize() {
   const oauth2Client = new google.auth.OAuth2(
     client.client_id,
     client.client_secret,
-    'urn:ietf:wg:oauth:2.0:oob' // manual code copy
+    'urn:ietf:wg:oauth:2.0:oob' // forces manual code copy
   );
 
   try {
@@ -79,7 +60,6 @@ async function authorize() {
   }
 }
 
-// Fetch all playlists
 async function listAllPlaylists(youtube) {
   const items = [];
   let nextPageToken;
@@ -96,26 +76,18 @@ async function listAllPlaylists(youtube) {
   return items;
 }
 
-// Parse command-line arguments
 function parseArgs() {
   const argv = process.argv.slice(2);
   const all = argv.includes('--all');
   const confirm = argv.includes('--confirm');
-  const single = argv.includes('--single');
+  const single = argv.includes('--single'); // new flag
   const filterArg = argv.find(a => a.startsWith('--filter='));
   const idsArg = argv.find(a => a.startsWith('--ids='));
-  const itemsArg = argv.find(a => a.startsWith('--items='));
-  const beforeArg = argv.find(a => a.startsWith('--before='));
-
   const filter = filterArg ? filterArg.split('=')[1] : null;
   const ids = idsArg ? idsArg.split('=')[1].split(',').map(s => s.trim()).filter(Boolean) : null;
-  const itemsCount = itemsArg ? parseInt(itemsArg.split('=')[1], 10) : null;
-  const beforeYear = beforeArg ? parseInt(beforeArg.split('=')[1], 10) : null;
-
-  return { all, confirm, filter, ids, single, itemsCount, beforeYear };
+  return { all, confirm, filter, ids, single };
 }
 
-// Sleep helper
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 (async () => {
@@ -130,17 +102,15 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     return;
   }
 
-  // Display all playlists
+  // Display all playlists first
   console.log(`Found ${playlists.length} playlists:\n`);
   playlists.forEach((p, idx) => {
-    console.log(`${String(idx+1).padStart(3)}. ${p.snippet.title} (${p.id}) [items: ${p.contentDetails.itemCount || 0}] [created: ${p.snippet.publishedAt}]`);
+    console.log(`${String(idx+1).padStart(3)}. ${p.snippet.title}  (id: ${p.id})  [items: ${p.contentDetails.itemCount || 0}]`);
   });
 
   // Determine which playlists to delete
   let toDelete = [];
-  if (args.itemsCount != null) {
-    toDelete = playlists.filter(p => (p.contentDetails.itemCount || 0) === args.itemsCount);
-  } else if (args.single) {
+  if (args.single) {
     toDelete = playlists.filter(p => (p.contentDetails.itemCount || 0) === 1);
   } else if (args.all) {
     toDelete = playlists.slice();
@@ -153,23 +123,17 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     toDelete = playlists.filter(p => re.test(p.snippet.title));
   }
 
-  // Filter by creation date if --before=YYYY is used
-  if (args.beforeYear != null) {
-    const cutoff = new Date(`${args.beforeYear}-01-01T00:00:00Z`);
-    toDelete = toDelete.filter(p => new Date(p.snippet.publishedAt) < cutoff);
-  }
-
   if (!toDelete.length) {
     console.log('\nNo playlists matched your selection. Exiting.');
     return;
   }
 
-  console.log(`\nMatched ${toDelete.length} playlists to delete:`);
-  await pageOutput(toDelete);
+  console.log(`\nMatched ${toDelete.length} playlists to delete (first 10 shown):`);
+  toDelete.slice(0,10).forEach(p => console.log(` - ${p.snippet.title} (${p.id}) [items: ${p.contentDetails.itemCount || 0}]`));
 
   if (!args.confirm) {
     console.log('\nSafety: add --confirm to actually delete the above playlists.');
-    console.log('Example: node delete_playlists.js --items=2 --before=2019 --confirm');
+    console.log('Example: node delete_playlists.js --single --confirm');
     return;
   }
 
@@ -182,7 +146,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
       const msg = (err && err.errors) ? JSON.stringify(err.errors) : (err.message || err);
       console.error(`Failed: ${p.snippet.title} (${p.id}) -> ${msg}`);
     }
-    await sleep(350);
+    await sleep(350); // small delay to avoid hammering the API
   }
 
   console.log('Done.');
